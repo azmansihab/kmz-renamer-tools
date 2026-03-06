@@ -4,121 +4,109 @@ import re
 from lxml import etree
 import io
 
-# Konfigurasi Halaman
-st.set_page_config(page_title="KMZ Renamer Pro", page_icon="🌐", layout="wide")
+# Konfigurasi Halaman Streamlit
+st.set_page_config(page_title="ISP KMZ Renamer Pro", page_icon="📍", layout="wide")
 
-# CSS Custom agar tampilan lebih rapi
+# Tambahkan CSS untuk tampilan yang lebih profesional
 st.markdown("""
     <style>
-    .main {
-        background-color: #f5f7f9;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        height: 3em;
-        background-color: #007BFF;
-        color: white;
-    }
+    .stAlert { margin-top: 20px; }
+    .stDownloadButton button { width: 100%; background-color: #007bff; color: white; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🌐 KMZ Advanced Renamer for ISP")
-st.write("Alat bantu untuk merename ribuan homepass secara otomatis berdasarkan urutan.")
+st.title("📍 ISP KMZ Advanced Renamer")
+st.write("Gunakan alat ini untuk merename massal homepass (titik) pada file KMZ secara berurutan.")
 
-# --- SIDEBAR SETTINGS ---
-st.sidebar.header("⚙️ Pengaturan Penamaan")
-prefix = st.sidebar.text_input("Awalan (Prefix)", value="", placeholder="Contoh: No. atau Blok-")
-start_number = st.sidebar.number_input("Mulai dari Angka", min_value=0, value=1, step=1)
+# --- SIDEBAR KONFIGURASI ---
+st.sidebar.header("⚙️ Pengaturan Nama Baru")
+prefix = st.sidebar.text_input("Awalan (Prefix)", value="", placeholder="Contoh: No. atau A-")
+start_num = st.sidebar.number_input("Mulai dari Angka", min_value=0, value=1, step=1)
 suffix = st.sidebar.text_input("Akhiran (Suffix)", value="", placeholder="Contoh: -JKT")
 
 st.sidebar.markdown("---")
-st.sidebar.info("""
-**Cara Kerja:**
-1. Upload file KMZ.
-2. Atur Prefix dan Angka Mulai.
-3. Klik Download.
-Aplikasi akan mencari setiap **Placemark** dan mengganti namanya sesuai urutan.
-""")
+st.sidebar.info("Aplikasi ini akan mencari setiap **Placemark** (titik) dan mengganti label namanya secara berurutan sesuai pengaturan di atas.")
 
-# --- MAIN INTERFACE ---
-uploaded_file = st.file_uploader("Upload file KMZ Anda (Maks 1GB)", type=["kmz"])
+# --- AREA UPLOAD ---
+uploaded_file = st.file_uploader("Upload file KMZ Anda (Maksimal 1GB)", type=["kmz"])
 
 if uploaded_file is not None:
-    with st.spinner('Memproses data... Mohon tunggu sebentar.'):
+    with st.spinner('Sedang memproses file...'):
         try:
-            # Membaca KMZ asli
+            # 1. Membaca file KMZ
             input_kmz = zipfile.ZipFile(uploaded_file, 'r')
             
-            # Mencari file KML di dalam KMZ secara dinamis
-            kml_filename = next((f for f in input_kmz.namelist() if f.endswith('.kml')), None)
+            # 2. Cari file KML (bisa doc.kml atau nama lain)
+            kml_filename = next((f for f in input_kmz.namelist() if f.lower().endswith('.kml')), None)
             
             if not kml_filename:
-                st.error("File KML tidak ditemukan di dalam paket KMZ.")
+                st.error("Error: Tidak ditemukan file KML di dalam KMZ ini.")
             else:
-                # Membaca isi KML
                 kml_content = input_kmz.read(kml_filename)
                 
-                # Parsing dengan lxml (lebih stabil untuk file besar)
+                # 3. Parsing XML dengan mode 'Recover' agar tidak gampang error jika ada karakter aneh
                 parser = etree.XMLParser(recover=True, remove_blank_text=True)
                 tree = etree.fromstring(kml_content, parser=parser)
                 
-                # Mencari semua elemen Placemark (titik/garis/poligon)
-                # Menggunakan wildcard namespace agar tidak error di berbagai versi KML
+                # 4. Cari SEMUA elemen Placemark menggunakan XPath (Namespace Agnostic)
+                # Ini adalah bagian kunci agar tidak terjadi error "0 titik diubah"
                 placemarks = tree.xpath('//*[local-name()="Placemark"]')
                 
-                log_data = []
-                current_num = start_number
-                
-                for pm in placemarks:
-                    # Cari tag <name> di dalam Placemark tersebut
-                    name_tag = pm.find('.//*[local-name()="name"]')
+                if not placemarks:
+                    st.warning("Peringatan: Berhasil membaca file, tapi tidak ditemukan objek 'Placemark' di dalamnya.")
+                else:
+                    log_updates = []
+                    current_count = start_num
                     
-                    # Jika tag <name> tidak ada, kita buatkan baru agar tetap ter-rename
-                    if name_tag is None:
-                        name_tag = etree.SubElement(pm, "{http://www.opengis.net/kml/2.2}name")
+                    for pm in placemarks:
+                        # Cari tag <name> di dalam Placemark
+                        name_tag = pm.find('.//*[local-name()="name"]')
+                        
+                        # Jika tag <name> tidak ada (titik tanpa nama), kita buatkan baru
+                        if name_tag is None:
+                            # Gunakan default namespace KML jika memungkinkan
+                            name_tag = etree.SubElement(pm, "{http://www.opengis.net/kml/2.2}name")
+                        
+                        old_text = name_tag.text if name_tag.text else "N/A"
+                        new_text = f"{prefix}{current_count}{suffix}"
+                        
+                        # Proses Rename
+                        name_tag.text = new_text
+                        log_updates.append({"Asli": old_text, "Baru": new_text})
+                        current_count += 1
                     
-                    old_val = name_tag.text if name_tag.text else "Tanpa Nama"
-                    new_val = f"{prefix}{current_num}{suffix}"
+                    # 5. Bangun kembali KML ke format String
+                    new_kml_data = etree.tostring(tree, xml_declaration=True, encoding='UTF-8', pretty_print=True)
                     
-                    name_tag.text = new_val
-                    log_data.append({"Asli": old_val, "Baru": new_val})
-                    current_num += 1
-                
-                # Konversi kembali ke String XML
-                new_kml_str = etree.tostring(tree, xml_declaration=True, encoding='UTF-8', pretty_print=True)
-                
-                # Membuat file KMZ baru di memori
-                output_buffer = io.BytesIO()
-                with zipfile.ZipFile(output_buffer, 'w', zipfile.ZIP_DEFLATED) as new_kmz:
-                    # Tulis KML yang sudah dimodifikasi
-                    new_kmz.writestr(kml_filename, new_kml_str)
+                    # 6. Bungkus ke KMZ baru (di memori/RAM)
+                    output_buffer = io.BytesIO()
+                    with zipfile.ZipFile(output_buffer, 'w', zipfile.ZIP_DEFLATED) as new_kmz:
+                        # Masukkan KML yang sudah diupdate
+                        new_kmz.writestr(kml_filename, new_kml_data)
+                        
+                        # Salin file lain (gambar, icon, dll) agar tidak hilang
+                        for item in input_kmz.infolist():
+                            if item.filename != kml_filename:
+                                new_kmz.writestr(item, input_kmz.read(item.filename))
                     
-                    # Copy semua file pendukung (images, icons) agar file tidak rusak
-                    for item in input_kmz.infolist():
-                        if item.filename != kml_filename:
-                            new_kmz.writestr(item, input_kmz.read(item.filename))
-                
-                st.success(f"✅ Berhasil memproses {len(placemarks)} titik!")
-                
-                # Layout Tombol Download & Log
-                col1, col2 = st.columns([1, 2])
-                
-                with col1:
-                    st.download_button(
-                        label="📥 Unduh KMZ Hasil Rename",
-                        data=output_buffer.getvalue(),
-                        file_name=f"Renamed_{uploaded_file.name}",
-                        mime="application/vnd.google-earth.kmz"
-                    )
-                
-                with col2:
-                    with st.expander("Lihat Detail Perubahan"):
-                        st.table(log_data[:100]) # Tampilkan 100 pertama agar tidak berat
-                        if len(log_data) > 100:
-                            st.write(f"...dan {len(log_data)-100} titik lainnya.")
+                    st.success(f"✅ Berhasil merename {len(placemarks)} titik homepass!")
+                    
+                    # Tombol Download & Log
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.download_button(
+                            label="📥 Download Hasil Rename",
+                            data=output_buffer.getvalue(),
+                            file_name=f"Renamed_{uploaded_file.name}",
+                            mime="application/vnd.google-earth.kmz"
+                        )
+                    
+                    with col2:
+                        with st.expander("Lihat Detail Hasil Rename (Maks 100 data)"):
+                            st.table(log_updates[:100])
 
             input_kmz.close()
 
         except Exception as e:
-            st.error(f"Terjadi Kesalahan: {str(e)}")
+            st.error(f"Terjadi kesalahan teknis: {str(e)}")
+            st.info("Saran: Coba bersihkan file KMZ Anda di Google Earth Pro sebelum diupload kembali.")
